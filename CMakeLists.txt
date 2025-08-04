@@ -9,6 +9,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(NETSNMP REQUIRED netsnmp)
 find_package(CURL REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 include_directories(
     ${NETSNMP_INCLUDE_DIRS}
@@ -27,3 +28,4 @@ target_link_libraries(
     ${CURL_LIBRARIES}
     nlohmann_json::nlohmann_json
 )
+target_link_libraries(SNMP yaml-cpp)

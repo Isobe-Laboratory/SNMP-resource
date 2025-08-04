@@ -15,6 +15,7 @@
 #include <vector>
 #include <regex>
 #include <nlohmann/json.hpp>
+#include <yaml-cpp/yaml.h>
 
 using json = nlohmann::json;
 
@@ -49,7 +50,7 @@ namespace SNMP_OID {
         MEM_CACHE,
         CPU_USER,
         CPU_SYS,
-        CPU_IDLE
+        CPU_IDLE,
     };
 
     using OID = std::variant<STR, NUM>;
@@ -64,6 +65,21 @@ namespace SNMP_OID {
         {NUM::CPU_SYS,   ".1.3.6.1.4.1.2021.11.10.0"},
         {NUM::CPU_IDLE,  ".1.3.6.1.4.1.2021.11.11.0"},
     };
+}
+
+struct Node {
+    std::string ip_address;
+};
+
+std::vector<YAML::Node> load_yaml(const std::string& filename) {
+
+    std::vector<YAML::Node> nodes;
+    YAML::Node yaml_root = YAML::LoadFile(filename);
+
+    for (const auto& entry : yaml_root) {
+        nodes.push_back(entry["node"]);
+    }
+    return nodes;
 }
 
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
@@ -214,33 +230,45 @@ std::string showBar(double value) {
 
 int main(void) {
 
-    std::string filename("../address_list.txt");
+    const std::string filename = "../address_list.yaml";
     std::ifstream file(filename);
-    std::string ip_address;
-
     if (!file.is_open()) {
         std::cerr << "Error: Could not open file " << filename << std::endl;
-        return 0;
+        return -1;
     }
+    file.close();
+
+    std::vector<YAML::Node> nodes = load_yaml(filename);
 
     std::ostringstream send_text;
     send_text << "```" << std::endl;
-    send_text << " IP ADDRESS      | HOST NAME      | CPU (%)                  | MEMORY (%)                  " << std::endl;
-    send_text << "-----------------+----------------+--------------------------+-----------------------------" << std::endl;
+    send_text << " IP ADDRESS      | Remark           | HOST NAME  | CPU (%)              | TOTAL MEM | MEMORY (%)                  " << std::endl;
+    send_text << "-----------------+------------------+------------+----------------------+-----------+-----------------------------" << std::endl;
 
-    while (std::getline(file, ip_address)) {
+    // while (std::getline(file, ip_address)) {
+    for (const auto& node : nodes) {
+        std::string ip_address = node["ip_address"].as<std::string>();
+
+        if(ip_address.empty() || ip_address[0] == '#'){
+            continue;
+        }
+
         /* DEBUG */ std::cout << "SNMP CONNECTING TO -> " << ip_address << std::endl;
 
         std::ostringstream oss_host;
 
         // (IP address)
-        oss_host << " " << std::left << std::setw(15) << ip_address << std::right << " |";
+        oss_host << " " << std::left << std::setw(15) << ip_address << std::right << " | ";
+
+        // remark
+        std::string remark = "";
+        if(node["remark"]){
+            remark = node["remark"].as<std::string>();
+        }
 
         try{
             // HOST NAME
             std::string host_name = get_str(ip_address, SNMP_OID::STR::HOST_NAME);
-            // oss_host << std::setw(15) << host_name << " ";
-            // oss_host << "|";
 
             // CPU
             int cpu_user = get_int(ip_address, SNMP_OID::NUM::CPU_USER);
@@ -249,36 +277,28 @@ int main(void) {
 
             int cpu_used = cpu_user + cpu_sys;
 
-            // oss_host << " " << std::setw(7) << cpu_used << " " << showBar(cpu_used);
-            // oss_host << "|";
 
             // MEMORY
             int mem_total = get_int(ip_address, SNMP_OID::NUM::MEM_TOTAL);
             int mem_avil  = get_int(ip_address, SNMP_OID::NUM::MEM_AVIL);
             int mem_buf   = get_int(ip_address, SNMP_OID::NUM::MEM_BUF);
             int mem_cache = get_int(ip_address, SNMP_OID::NUM::MEM_CACHE);
-
             int mem_used = mem_total - mem_avil - mem_buf - mem_cache;
-            // int mem_used = mem_total - mem_avil;
             double mem_used_percent = 100.0 * mem_used / mem_total;
 
-            // oss_host << " " << std::setw(10) << mem_used_percent << " " << showBar(mem_used_percent);
+            oss_host << std::setw(16) << remark;
+            oss_host << " | ";
 
-            // /* DEBUG */ std::cout << "HOST_NAME : " << host_name << std::endl;
-            // /* DEBUG */ std::cout << "CPU_USER  : " << cpu_user  << std::endl;
-            // /* DEBUG */ std::cout << "CPU_SYS   : " << cpu_sys   << std::endl;
-            // /* DEBUG */ std::cout << "CPU_IDLE  : " << cpu_idle  << std::endl;
-            // /* DEBUG */ std::cout << "MEM_TOTAL : " << mem_total << std::endl;
-            // /* DEBUG */ std::cout << "MEM_AVIL  : " << mem_avil  << std::endl;
+            oss_host << std::setw(10) << host_name;
+            oss_host << " | ";
 
-            oss_host << std::setw(15) << host_name << " ";
-            oss_host << "|";
+            oss_host << " " << std::setw(3) << cpu_used << " " << showBar(cpu_used);
+            oss_host << " | ";
 
-            oss_host << " " << std::setw(7) << cpu_used << " " << showBar(cpu_used);
-            oss_host << "|";
+            oss_host << std::setw(10) << static_cast<int>(mem_total/std::pow(2, 20));
+            oss_host << " | ";
 
             oss_host << " " << std::setw(10) << mem_used_percent << " " << showBar(mem_used_percent);
-
             oss_host << std::endl;
 
         }
@@ -287,7 +307,6 @@ int main(void) {
             std::cerr << e.what() << std::endl;
             oss_host << " ERROR" << std::endl;
         }
-        // std::cout << oss_host.str() << std::endl;
         send_text << oss_host.str();
     }
     send_text << "```" << std::endl;
@@ -306,19 +325,16 @@ int main(void) {
     }
 
     // GET HISTORY
-
     CURL* c_get = curl_easy_init();
     if (!c_get) {
         std::cout << "[ERROR] curl has not been established!" << std::endl;
         return 1;
     }
-
     std::map<std::string, std::string> p_history{
         {"token", token},
         {"channel", channel},
         {"username", "SNMP"}
     };
-
     std::string f_history;
     std::string response;
     for (auto& [k,v] : p_history) {
@@ -328,7 +344,6 @@ int main(void) {
         f_history += ek; f_history += '='; f_history += ev;
         curl_free(ek); curl_free(ev);
     }
-
     curl_easy_setopt(c_get, CURLOPT_URL, "https://slack.com/api/conversations.history");
     curl_easy_setopt(c_get, CURLOPT_POSTFIELDS, f_history.c_str());
     curl_easy_setopt(c_get, CURLOPT_WRITEFUNCTION, nullptr);
@@ -343,14 +358,12 @@ int main(void) {
     if (res == CURLE_OK) {
         try {
             messages_json = json::parse(response);
-            std::cout << messages_json.dump(4) << std::endl;  // フォーマット付き出力
         } catch (json::parse_error& e) {
             std::cerr << "JSON parse error: " << e.what() << std::endl;
         }
     } else {
         std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res) << std::endl;
     }
-
     std::cout << "[DEBUG] GOT ALL MESSAGES" << std::endl;
 
     // DELETE MESSAGES
@@ -364,11 +377,8 @@ int main(void) {
                 {"ts", ts}
             };
 
-            // std::cout << ts <<std::endl;
-
             CURL* c_delete = curl_easy_init();
             if (!c_delete) return 1;
-
             std::string f_delete;
             std::string response;
             for (auto& [k,v] : p_delete) {
@@ -389,7 +399,6 @@ int main(void) {
     }
 
     std::cout << "[DEBUG] DELETED ALL MESSAGES" << std::endl;
-
 
     // UPDATE THE MESSAGES
     CURL* c_send = curl_easy_init();
@@ -421,7 +430,6 @@ int main(void) {
     std::cout << send_text.str() << std::endl;
 
     std::cout << "[DEBUG] SEND THE MESSAGE" << std::endl;
-
 
     return 0;
 }
